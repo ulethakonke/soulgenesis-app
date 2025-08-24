@@ -1,0 +1,80 @@
+{
+  "custom": {
+    "video": {
+      "crf": 28,
+      "preset": "medium",
+      "max_height": 1080,
+      "audio_bitrate": "128k",
+      "target_size_mb": null
+    },
+    "image": {
+      "quality": 85,
+      "use_palette": true,
+      "target_size_kb": null
+    }
+  },
+  "whatsapp": {
+    "video": {
+      "crf": 32,
+      "preset": "fast",
+      "max_height": 360,
+      "audio_bitrate": "96k",
+      "target_size_mb": 15.5
+    },
+    "image": {
+      "quality": 75,
+      "use_palette": false,
+      "target_size_kb": 4500
+    }
+  },
+  "tiktok_android": {
+    "video": {
+      "crf": 28,
+      "preset": "medium",
+      "max_height": 1080,
+      "audio_bitrate": "128k",
+      "target_size_mb": 68
+    }
+  },
+  "tiktok_ios": {
+    "video": {
+      "crf": 25,
+      "preset": "medium",
+      "max_height": 1080,
+      "audio_bitrate": "128k",
+      "target_size_mb": 280
+    }
+  },
+  "tiktok_web": {
+    "video": {
+      "crf": 23,
+      "preset": "slow",
+      "max_height": 1080,
+      "audio_bitrate": "128k",
+      "target_size_mb": 480
+    }
+  },
+  "instagram_reels": {
+    "video": {
+      "crf": 22,
+      "preset": "medium",
+      "max_height": 1080,
+      "audio_bitrate": "128k",
+      "target_size_mb": null
+    },
+    "image": {
+      "quality": 90,
+      "use_palette": false,
+      "target_size_kb": 28000
+    }
+  },
+  "youtube_shorts": {
+    "video": {
+      "crf": 18,
+      "preset": "slow",
+      "max_height": 1080,
+      "audio_bitrate": "128k",
+      "target_size_mb": null
+    }
+  }
+}
