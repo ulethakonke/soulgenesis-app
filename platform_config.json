@@ -5,7 +5,8 @@
       "preset": "medium",
       "max_height": 1080,
       "audio_bitrate": "128k",
-      "target_size_mb": null
+      "target_size_mb": null,
+      "codec": "libx264"
     },
     "image": {
       "quality": 85,
@@ -19,7 +20,8 @@
       "preset": "fast",
       "max_height": 360,
       "audio_bitrate": "96k",
-      "target_size_mb": 15.5
+      "target_size_mb": 15.5,
+      "codec": "libx264"
     },
     "image": {
       "quality": 75,
@@ -33,7 +35,8 @@
       "preset": "medium",
       "max_height": 1080,
       "audio_bitrate": "128k",
-      "target_size_mb": 68
+      "target_size_mb": 68,
+      "codec": "libx264"
     }
   },
   "tiktok_ios": {
@@ -42,7 +45,8 @@
       "preset": "medium",
       "max_height": 1080,
       "audio_bitrate": "128k",
-      "target_size_mb": 280
+      "target_size_mb": 280,
+      "codec": "libx264"
     }
   },
   "tiktok_web": {
@@ -51,7 +55,8 @@
       "preset": "slow",
       "max_height": 1080,
       "audio_bitrate": "128k",
-      "target_size_mb": 480
+      "target_size_mb": 480,
+      "codec": "libx264"
     }
   },
   "instagram_reels": {
@@ -60,7 +65,8 @@
       "preset": "medium",
       "max_height": 1080,
       "audio_bitrate": "128k",
-      "target_size_mb": null
+      "target_size_mb": null,
+      "codec": "libx264"
     },
     "image": {
       "quality": 90,
@@ -74,7 +80,8 @@
       "preset": "slow",
       "max_height": 1080,
       "audio_bitrate": "128k",
-      "target_size_mb": null
+      "target_size_mb": null,
+      "codec": "libx264"
     }
   }
 }

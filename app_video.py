@@ -9,7 +9,6 @@ import zlib
 import numpy as np
 import gc
 import concurrent.futures
-import ffmpeg
 import time
 
 # -----------------------------
@@ -36,7 +35,7 @@ def load_platform_config():
         return {
             "custom": {
                 "video": {"crf": 28, "preset": "medium", "max_height": 1080, 
-                         "audio_bitrate": "128k", "target_size_mb": None},
+                         "audio_bitrate": "128k", "target_size_mb": None, "codec": "libx264"},
                 "image": {"quality": 85, "use_palette": True, "target_size_kb": None}
             }
         }
@@ -52,13 +51,33 @@ def cleanup_temp_files(*file_paths):
     gc.collect()
 
 def check_ffmpeg():
-    """Check if FFmpeg is available on the system"""
+    """Check if FFmpeg is available on the system and what codecs are supported"""
     try:
+        # Check if ffmpeg exists
         result = subprocess.run(["ffmpeg", "-version"], 
-                              capture_output=True, text=True, timeout=5)
-        return result.returncode == 0
-    except:
-        return False
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return False, "FFmpeg not found"
+        
+        # Check available codecs
+        codecs_result = subprocess.run(["ffmpeg", "-codecs"], 
+                                     capture_output=True, text=True, timeout=10)
+        codecs_output = codecs_result.stdout.lower()
+        
+        supported_codecs = []
+        if "libx264" in codecs_output:
+            supported_codecs.append("libx264")
+        if "libx265" in codecs_output:
+            supported_codecs.append("libx265")
+        
+        return True, supported_codecs
+        
+    except FileNotFoundError:
+        return False, "FFmpeg command not found"
+    except subprocess.TimeoutExpired:
+        return False, "FFmpeg check timed out"
+    except Exception as e:
+        return False, f"FFmpeg check error: {str(e)}"
 
 def get_file_type(file_name):
     """Determine if file is image or video based on extension"""
@@ -72,6 +91,18 @@ def get_file_type(file_name):
         return "video"
     else:
         return "unknown"
+
+def get_video_duration(input_path):
+    """Get video duration using ffprobe"""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error', '-show_entries', 
+            'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', input_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip())
+    except:
+        return 60.0  # Default assumption if cannot get duration
 
 # -----------------------------
 # Watermark Functions
@@ -119,42 +150,6 @@ def add_watermark_to_image(input_image, watermark_image, position='bottom-right'
         input_image = input_image.convert('RGBA')
     
     return Image.alpha_composite(input_image, transparent)
-
-def add_watermark_to_video(input_path, output_path, watermark_path, position='bottom-right', opacity=0.7, scale=0.2):
-    """Add watermark to video using ffmpeg"""
-    # Calculate overlay position for ffmpeg
-    if position == 'bottom-right':
-        overlay_x = 'main_w - overlay_w - 10'
-        overlay_y = 'main_h - overlay_h - 10'
-    elif position == 'top-right':
-        overlay_x = 'main_w - overlay_w - 10'
-        overlay_y = '10'
-    elif position == 'bottom-left':
-        overlay_x = '10'
-        overlay_y = 'main_h - overlay_h - 10'
-    elif position == 'top-left':
-        overlay_x = '10'
-        overlay_y = '10'
-    elif position == 'center':
-        overlay_x = '(main_w - overlay_w)/2'
-        overlay_y = '(main_h - overlay_h)/2'
-    else:
-        overlay_x = '10'
-        overlay_y = '10'
-    
-    # Build ffmpeg command
-    input_stream = ffmpeg.input(input_path)
-    watermark_stream = ffmpeg.input(watermark_path)
-    
-    # Scale watermark
-    watermark_scaled = watermark_stream.filter('scale', f'iw*{scale}', -1)
-    
-    # Apply opacity and overlay
-    output = ffmpeg.filter([input_stream, watermark_scaled], 'overlay', overlay_x, overlay_y)
-    output = output.output(output_path, **{'c:v': 'libx264', 'c:a': 'copy'})
-    
-    # Run command
-    output.run(overwrite_output=True, quiet=True)
 
 # -----------------------------
 # Compression Functions
@@ -241,22 +236,40 @@ def decompress_image(input_path, output_path):
         except:
             raise ValueError("Invalid .genesis file format")
 
-def compress_video(in_path, out_path, config):
-    """Compress video using FFmpeg with configuration"""
+def compress_video_safe(in_path, out_path, config):
+    """Safe video compression with fallback options"""
     in_path = str(Path(in_path))
     out_path = str(Path(out_path))
 
+    # Get available codecs
+    ffmpeg_available, codec_info = check_ffmpeg()
+    if not ffmpeg_available:
+        raise Exception("FFmpeg not available: " + str(codec_info))
+    
+    supported_codecs = codec_info if isinstance(codec_info, list) else []
+    
+    # Use configuration with fallbacks
     crf = config.get('crf', 28)
     preset = config.get('preset', 'medium')
     max_height = config.get('max_height', 1080)
     audio_bitrate = config.get('audio_bitrate', '128k')
     target_size_mb = config.get('target_size_mb')
-
-    # Build ffmpeg command
+    preferred_codec = config.get('codec', 'libx264')
+    
+    # Choose available codec
+    if preferred_codec in supported_codecs:
+        video_codec = preferred_codec
+    elif 'libx264' in supported_codecs:
+        video_codec = 'libx264'
+        st.warning("H.265 not available, using H.264 instead")
+    else:
+        raise Exception("No supported video codecs found. Available: " + str(supported_codecs))
+    
+    # Build basic ffmpeg command
     cmd = [
         "ffmpeg", "-y",
         "-i", in_path,
-        "-c:v", "libx265",
+        "-c:v", video_codec,
         "-preset", preset,
         "-crf", str(crf),
         "-c:a", "aac",
@@ -271,38 +284,29 @@ def compress_video(in_path, out_path, config):
 
     cmd.append(out_path)
 
-    # If target size is specified, use two-pass encoding
+    # For target size, use single-pass with bitrate estimation (more reliable)
     if target_size_mb:
-        # Estimate bitrate needed (in kbps)
-        duration = float(ffmpeg.probe(in_path)['format']['duration'])
-        target_bitrate = int((target_size_mb * 8192) / duration)  # MB * 8192 = kbit
+        duration = get_video_duration(in_path)
+        target_bitrate = int((target_size_mb * 8192) / max(1, duration))  # MB * 8192 = kbit
         
-        # Two-pass encoding
-        pass1_cmd = cmd.copy()
-        pass1_cmd.insert(-1, "-pass")
-        pass1_cmd.insert(-1, "1")
-        pass1_cmd.insert(-1, "-f")
-        pass1_cmd.insert(-1, "null")
-        pass1_cmd.append("/dev/null" if os.name != 'nt' else "NUL")
-        
-        pass2_cmd = cmd.copy()
-        pass2_cmd.insert(-1, "-pass")
-        pass2_cmd.insert(-1, "2")
-        pass2_cmd.insert(-1, "-b:v")
-        pass2_cmd.insert(-1, f"{target_bitrate}k")
-        
-        # Run first pass
-        subprocess.run(pass1_cmd, check=True, timeout=600)
-        # Run second pass
-        subprocess.run(pass2_cmd, check=True, timeout=600)
-        
-        # Clean up passlog files
-        for f in os.listdir('.'):
-            if f.startswith('ffmpeg2pass'):
-                os.remove(f)
-    else:
-        # Single pass encoding
-        subprocess.run(cmd, check=True, timeout=600)
+        # Replace CRF with bitrate control
+        cmd[cmd.index("-crf") + 1] = "-b:v"
+        cmd.insert(cmd.index("-b:v") + 1, f"{target_bitrate}k")
+        cmd.insert(cmd.index("-b:v") + 2, "-maxrate")
+        cmd.insert(cmd.index("-maxrate") + 1, f"{target_bitrate}k")
+        cmd.insert(cmd.index("-maxrate") + 2, "-bufsize")
+        cmd.insert(cmd.index("-bufsize") + 1, f"{target_bitrate * 2}k")
+    
+    # Run the command with timeout
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            error_msg = result.stderr or "Unknown error"
+            raise Exception(f"FFmpeg error: {error_msg}")
+    except subprocess.TimeoutExpired:
+        raise Exception("Compression timed out after 5 minutes")
+    except Exception as e:
+        raise Exception(f"Compression failed: {str(e)}")
 
 def decompress_video(in_path, out_path):
     """Decompress video by re-encoding to H.264"""
@@ -313,63 +317,21 @@ def decompress_video(in_path, out_path):
         "ffmpeg", "-y",
         "-i", in_path,
         "-c:v", "libx264",
-        "-crf", "18",
+        "-crf", "23",  # Slightly higher CRF for decompression
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "+faststart",
         "-loglevel", "error",
         out_path
     ]
-    subprocess.run(cmd, check=True, timeout=600)
-
-# -----------------------------
-# Batch Processing Functions
-# -----------------------------
-def process_batch(input_dir, output_dir, platform, media_type, watermark_options=None, progress_callback=None):
-    """Process all files in a directory"""
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     
-    files = [f for f in input_dir.iterdir() if f.is_file()]
-    results = []
-    
-    config = load_platform_config().get(platform, {}).get(media_type, {})
-    
-    for i, file_path in enumerate(files):
-        try:
-            file_type = get_file_type(file_path.name)
-            if file_type != media_type:
-                continue
-                
-            output_path = output_dir / f"compressed_{file_path.name}"
-            
-            if file_type == "image":
-                method, quality = compress_image(str(file_path), str(output_path), config)
-                results.append({
-                    'file': file_path.name,
-                    'status': 'success',
-                    'method': method,
-                    'quality': quality
-                })
-            elif file_type == "video":
-                compress_video(str(file_path), str(output_path), config)
-                results.append({
-                    'file': file_path.name,
-                    'status': 'success'
-                })
-            
-            if progress_callback:
-                progress_callback((i + 1) / len(files))
-                
-        except Exception as e:
-            results.append({
-                'file': file_path.name,
-                'status': 'error',
-                'error': str(e)
-            })
-    
-    return results
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            error_msg = result.stderr or "Unknown error"
+            raise Exception(f"FFmpeg error: {error_msg}")
+    except subprocess.TimeoutExpired:
+        raise Exception("Decompression timed out after 5 minutes")
 
 # -----------------------------
 # UI Components
@@ -377,6 +339,17 @@ def process_batch(input_dir, output_dir, platform, media_type, watermark_options
 def render_sidebar():
     """Render sidebar controls"""
     st.sidebar.title("⚙️ SoulGenesis Settings")
+    
+    # Check FFmpeg status first
+    ffmpeg_available, codec_info = check_ffmpeg()
+    
+    if not ffmpeg_available:
+        st.sidebar.error(f"⚠️ FFmpeg Issue: {codec_info}")
+        st.sidebar.info("Video compression will not work. Image compression is available.")
+    else:
+        st.sidebar.success(f"✅ FFmpeg Available")
+        if isinstance(codec_info, list):
+            st.sidebar.info(f"Supported codecs: {', '.join(codec_info)}")
     
     # Mode selection
     mode = st.sidebar.radio(
@@ -416,7 +389,7 @@ def render_sidebar():
                 'scale': scale
             }
     
-    return mode, platform, watermark_options
+    return mode, platform, watermark_options, ffmpeg_available
 
 # -----------------------------
 # Main Application
@@ -428,15 +401,12 @@ def main():
     if "batch_results" not in st.session_state:
         st.session_state.batch_results = []
     
-    # Check environment
-    ffmpeg_available = check_ffmpeg()
-    
     # Header
     st.title("✨ SoulGenesis - Ultimate Media Compression")
     st.markdown("**Smart compression optimized for social media platforms • 100% offline processing**")
     
     # Sidebar
-    mode, platform, watermark_options = render_sidebar()
+    mode, platform, watermark_options, ffmpeg_available = render_sidebar()
     
     # Main content
     if mode == "Single File":
@@ -446,7 +416,7 @@ def main():
     
     # Footer
     st.markdown("---")
-    st.markdown("**SoulGenesis Media Compressor** • Professional FFmpeg-powered compression • Made for South African Hustlers")
+    st.markdown("**SoulGenesis Media Compressor** • Professional compression • Made for South African Hustlers")
 
 def render_single_file_mode(platform, watermark_options, ffmpeg_available):
     """Render single file compression interface"""
@@ -525,23 +495,7 @@ def render_single_file_mode(platform, watermark_options, ffmpeg_available):
                         
                         elif file_type == "video":
                             out_path = Path(tempfile.gettempdir()) / f"compressed_{Path(uploaded_file.name).stem}.mp4"
-                            compress_video(tmp_in_path, out_path, config)
-                            
-                            # Apply watermark if needed
-                            if watermark_options:
-                                watermark_temp = Path(tempfile.gettempdir()) / "watermark.png"
-                                watermark_options['image'].save(watermark_temp)
-                                
-                                final_path = Path(tempfile.gettempdir()) / f"watermarked_{Path(uploaded_file.name).stem}.mp4"
-                                add_watermark_to_video(
-                                    out_path,
-                                    final_path,
-                                    watermark_temp,
-                                    watermark_options['position'],
-                                    watermark_options['opacity'],
-                                    watermark_options['scale']
-                                )
-                                out_path = final_path
+                            compress_video_safe(tmp_in_path, out_path, config)
                             
                             compressed_size = os.path.getsize(out_path) / (1024 * 1024)
                             compression_ratio = (1 - compressed_size/file_size_mb) * 100
@@ -564,6 +518,7 @@ def render_single_file_mode(platform, watermark_options, ffmpeg_available):
                         
                     except Exception as e:
                         st.error(f"Compression failed: {str(e)}")
+                        st.info("This often happens when FFmpeg is not properly installed or doesn't support the required codecs.")
                         cleanup_temp_files(tmp_in_path)
     
     with tab2:
@@ -604,6 +559,8 @@ def render_batch_mode(platform, watermark_options, ffmpeg_available):
     """Render batch processing interface"""
     st.header("📦 Batch Processing")
     
+    st.warning("Batch processing is currently optimized for images. Video batch processing requires a local installation with full FFmpeg support.")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -612,6 +569,10 @@ def render_batch_mode(platform, watermark_options, ffmpeg_available):
     
     with col2:
         output_dir = st.text_input("Output Directory", placeholder="/path/to/output/folder")
+    
+    if media_type == "video":
+        st.info("For video batch processing, please download and run SoulGenesis locally where you can install FFmpeg with all codecs.")
+        return
     
     if st.button("🚀 Process Batch", type="primary", use_container_width=True):
         if not input_dir or not output_dir:
@@ -629,15 +590,38 @@ def render_batch_mode(platform, watermark_options, ffmpeg_available):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        def update_progress(progress):
-            progress_bar.progress(progress)
-            status_text.text(f"Processing: {progress*100:.1f}%")
-        
         try:
-            results = process_batch(
-                input_dir, output_dir, platform, media_type,
-                watermark_options, update_progress
-            )
+            # Simple batch processing for images only
+            input_path = Path(input_dir)
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            image_files = [f for f in input_path.iterdir() if f.is_file() and get_file_type(f.name) == "image"]
+            
+            results = []
+            for i, file_path in enumerate(image_files):
+                try:
+                    config = load_platform_config().get(platform, {}).get("image", {})
+                    output_file = output_path / f"compressed_{file_path.name}"
+                    
+                    method, quality = compress_image(str(file_path), str(output_file), config)
+                    results.append({
+                        'file': file_path.name,
+                        'status': 'success',
+                        'method': method,
+                        'quality': quality
+                    })
+                    
+                    progress = (i + 1) / len(image_files)
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing: {progress*100:.1f}%")
+                    
+                except Exception as e:
+                    results.append({
+                        'file': file_path.name,
+                        'status': 'error',
+                        'error': str(e)
+                    })
             
             st.session_state.batch_results = results
             status_text.text("Batch processing complete!")
@@ -654,7 +638,7 @@ def render_batch_mode(platform, watermark_options, ffmpeg_available):
             with st.expander("View Detailed Results"):
                 for result in results:
                     if result['status'] == 'success':
-                        st.write(f"✅ {result['file']}")
+                        st.write(f"✅ {result['file']} ({result['method']}, Q:{result['quality']})")
                     else:
                         st.write(f"❌ {result['file']}: {result['error']}")
         
